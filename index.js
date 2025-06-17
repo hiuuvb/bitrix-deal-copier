@@ -20,9 +20,9 @@ app.post('/', async (req, res) => {
     const { data: copyRes } = await axios.post(`${BITRIX_URL}/crm.deal.add`, {
       fields: {
         ...deal,
-        TITLE: deal.TITLE + ' (КОПИЯ)',
-        STAGE_ID: 'NEW', // укажи нужную стадию
-        CATEGORY_ID: 2   // укажи нужную воронку
+        TITLE: deal.TITLE ,
+        STAGE_ID: РД_выдан , // укажи нужную стадию
+        CATEGORY: Производство   // укажи нужную воронку
       }
     });
 
@@ -33,8 +33,14 @@ app.post('/', async (req, res) => {
     const { data: taskRes } = await axios.post(`${BITRIX_URL}/tasks.task.list`, {
       filter: {
         "UF_CRM_TASK": `D_${deal_id}`,
-        "STATUS": [-5, -4, -3, -2, -1, 1, 2, 3, 4] // только открытые
+        "STATUS": [1, 2, 3, 4] // только открытые
       }
+      filter: {
+  "RESPONSIBLE_ID": deal.ASSIGNED_BY_ID,
+  "!UF_CRM_TASK": [`D_${deal_id}`],  // исключаем уже найденные
+  "STATUS": [1, 2, 3, 4]
+}
+   
     });
 
     const tasks = taskRes.result.tasks;
