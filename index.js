@@ -1,10 +1,3 @@
-// Bitrix Deal Copier – полноценный рабочий файл
-// ---------------------------------------------
-// • Копирует сделку и все её открытые задачи в новую сделку
-// • Обрабатывает пагинацию Bitrix24, выводит подробный лог
-// • Запускается как Express‑сервис (POST /  { deal_id: 123 | [123,456] })
-// • .env: BITRIX_URL, CATEGORY_ID, STAGE_ID, PORT, LOG_LEVEL
-
 require('dotenv').config();
 const express  = require('express');
 const axios    = require('axios');
