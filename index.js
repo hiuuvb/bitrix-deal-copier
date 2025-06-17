@@ -21,33 +21,52 @@ app.post('/', async (req, res) => {
       fields: {
         ...deal,
         TITLE: deal.TITLE ,
-        STAGE_ID: РД_выдан , // укажи нужную стадию
-        CATEGORY: Производство   // укажи нужную воронку
+        STAGE_ID: 'РД_выдан' , // укажи нужную стадию
+        CATEGORY_ID: 1   // укажи нужную воронку
       }
     });
 
     const newDealId = copyRes.result;
     console.log(`✅ Новая сделка создана: ${newDealId}`);
 
-    // 3. Получаем задачи, привязанные к старой сделке
-    const { data: taskRes } = await axios.post(`${BITRIX_URL}/tasks.task.list`, {
+     // 3. Получаем все подходящие задачи
+    const allTasks = [];
+
+    // 3.1. Привязанные к сделке напрямую
+    const { data: attachedTasksRes } = await axios.post(`${BITRIX_URL}/tasks.task.list`, {
       filter: {
         "UF_CRM_TASK": `D_${deal_id}`,
-        "STATUS": [1, 2, 3, 4] // только открытые
+        "STATUS": [1, 2, 3, 4]
       }
-      filter: {
-  "RESPONSIBLE_ID": deal.ASSIGNED_BY_ID,
-  "!UF_CRM_TASK": [`D_${deal_id}`],  // исключаем уже найденные
-  "STATUS": [1, 2, 3, 4]
-}
-   
     });
+    if (attachedTasksRes.result?.tasks) {
+      allTasks.push(...attachedTasksRes.result.tasks);
+    }
 
-    const tasks = taskRes.result.tasks;
-    console.log(`📌 Найдено ${tasks.length} задач`);
+    // 3.2. От того же ответственного, но не привязанные
+    const { data: extraTasksRes } = await axios.post(`${BITRIX_URL}/tasks.task.list`, {
+      filter: {
+        "RESPONSIBLE_ID": deal.ASSIGNED_BY_ID,
+        "!UF_CRM_TASK": [`D_${deal_id}`],
+        "STATUS": [1, 2, 3, 4]
+      }
+    });
+    if (extraTasksRes.result?.tasks) {
+      allTasks.push(...extraTasksRes.result.tasks);
+    }
 
-    // 4. Копируем каждую задачу и привязываем к новой сделке
-    for (const task of tasks) {
+    // Удаляем дубли по task.id
+    const uniqueTasks = Object.values(
+      allTasks.reduce((acc, task) => {
+        acc[task.id] = task;
+        return acc;
+      }, {})
+    );
+
+    console.log(`📌 Найдено ${uniqueTasks.length} задач`);
+
+    // 4. Копируем задачи
+    for (const task of uniqueTasks) {
       await axios.post(`${BITRIX_URL}/tasks.task.add`, {
         fields: {
           TITLE: task.title,
@@ -58,7 +77,7 @@ app.post('/', async (req, res) => {
       });
     }
 
-    res.status(200).send(`Сделка и ${tasks.length} задач скопированы.`);
+    res.status(200).send(`Сделка и ${uniqueTasks.length} задач скопированы.`);
   } catch (e) {
     console.error(e.response?.data || e.message);
     res.status(500).send('Ошибка при копировании сделки или задач.');
