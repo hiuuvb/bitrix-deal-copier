@@ -1,11 +1,3 @@
-// Bitrix Deal Copier – v3 (стабильная версия)
-// ---------------------------------------------
-// ↪ Исправлено «undefined» при создании сделки:
-//    • Вернули query‑string вариант вызова Bitrix REST (axios.post(url, null, { params }))
-// ↪ Корректный фильтр задач (UF_CRM_TASK как массив, STATUS != 5)
-// ↪ Максимально совместимый парсинг ответов (dealId = num | obj.id)
-// ↪ Опция PARALLEL_TASKS = 3 для мягкого лимита RPS
-
 require('dotenv').config();
 const express  = require('express');
 const axios    = require('axios');
@@ -91,8 +83,8 @@ async function copyDeal(dealId) {
   // 3️⃣ Все открытые задачи исходной сделки
   const tasks = await btrxPaged('tasks.task.list', {
     filter: {
-      'UF_CRM_TASK': [`D_${dealId}`],
-      '!=STATUS': 5 // исключаем завершённые
+      'UF_CRM_TASK': `D_${dealId}`,  // строкой, иначе Bitrix не находит
+      '!REAL_STATUS': 5             // исключаем завершённые
     },
     select: ['ID','TITLE','RESPONSIBLE_ID','DESCRIPTION']
   });
@@ -102,7 +94,7 @@ async function copyDeal(dealId) {
   let copied = 0;
   for (let i = 0; i < tasks.length; i += PARALLEL_TASKS) {
     const slice = tasks.slice(i, i + PARALLEL_TASKS);
-    const results = await Promise.allSettled(slice.map(t =>
+    await Promise.allSettled(slice.map(t =>
       btrx('tasks.task.add', {
         fields: {
           TITLE: t.TITLE,
