@@ -22,7 +22,7 @@ app.post('/', async (req, res) => {
         ...deal,
         TITLE: deal.TITLE ,
         STAGE_ID: 'РД_выдан' , // укажи нужную стадию
-        CATEGORY_ID: 1   // укажи нужную воронку
+        CATEGORY_ID: 14   // укажи нужную воронку
       }
     });
 
