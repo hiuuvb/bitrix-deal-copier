@@ -7,8 +7,8 @@ const winston  = require('winston');
 // ─── НАСТРОЙКИ ───────────────────────────────────
 //--------------------------------------------------
 const BITRIX_URL  = process.env.BITRIX_URL;
-const CATEGORY_ID = Number(process.env.CATEGORY_ID || 0); // "0" = первая воронка
-const STAGE_ID    = process.env.STAGE_ID || 'NEW';
+const CATEGORY_ID = Number(process.env.CATEGORY_ID || 14); // "0" = первая воронка
+const STAGE_ID    = process.env.STAGE_ID || 'РД_выдан';
 const PORT        = process.env.PORT || 3000;
 
 if (!BITRIX_URL) {
