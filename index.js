@@ -61,8 +61,20 @@ app.post('/', async (req, res) => {
         acc[task.id] = task;
         return acc;
       }, {})
-    );
+    ); for (const task of tasks) {
+  const uf = task.ufCrmTask;
+  const taskId = task.id;
 
+  // Привязываем, если не привязана
+  if (!uf || uf.length === 0) {
+    await axios.post(`${BITRIX_URL}/tasks.task.update`, {
+      taskId: taskId,
+      fields: {
+        UF_CRM_TASK: [`D_${deal_id}`]
+      }
+    });
+    console.log(`🔗 Привязали задачу ${taskId} к сделке D_${deal_id}`);
+  }
     console.log(`📌 Найдено ${uniqueTasks.length} задач`);
 
     // 4. Копируем задачи
