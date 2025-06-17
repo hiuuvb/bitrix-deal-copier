@@ -1,17 +1,24 @@
+// Bitrix Deal Copier – v3 (стабильная версия)
+// ---------------------------------------------
+// ↪ Исправлено «undefined» при создании сделки:
+//    • Вернули query‑string вариант вызова Bitrix REST (axios.post(url, null, { params }))
+// ↪ Корректный фильтр задач (UF_CRM_TASK как массив, STATUS != 5)
+// ↪ Максимально совместимый парсинг ответов (dealId = num | obj.id)
+// ↪ Опция PARALLEL_TASKS = 3 для мягкого лимита RPS
+
 require('dotenv').config();
 const express  = require('express');
 const axios    = require('axios');
 const winston  = require('winston');
-const qs       = require('qs');
 
 //--------------------------------------------------
 // ─── НАСТРОЙКИ ───────────────────────────────────
 //--------------------------------------------------
-const BITRIX_URL  = process.env.BITRIX_URL;                      // https://example.bitrix24.ru/rest/1/xyz/
-const CATEGORY_ID = Number(process.env.CATEGORY_ID || 14);      // «0» = первая воронка
-const STAGE_ID    = process.env.STAGE_ID || 'РД_выдан';          // стадия новой сделки
-const PORT        = process.env.PORT || 3000;                   // порт Express
-const LOG_LEVEL   = process.env.LOG_LEVEL || 'info';            // info / debug / error
+const BITRIX_URL  = process.env.BITRIX_URL;
+const CATEGORY_ID = Number(process.env.CATEGORY_ID || 14);
+const STAGE_ID    = process.env.STAGE_ID || 'РД_выдан';
+const PORT        = process.env.PORT || 3000;
+const PARALLEL_TASKS = Number(process.env.PARALLEL_TASKS || 3); // одноврем. копий задач
 
 if (!BITRIX_URL) {
   console.error('❌ BITRIX_URL не задан в переменных окружения');
@@ -22,7 +29,7 @@ if (!BITRIX_URL) {
 // ─── ЛОГГЕР ──────────────────────────────────────
 //--------------------------------------------------
 const logger = winston.createLogger({
-  level: LOG_LEVEL,
+  level: process.env.LOG_LEVEL || 'info',
   format: winston.format.combine(
     winston.format.timestamp({ format: 'DD-MM-YYYY HH:mm:ss' }),
     winston.format.printf(({ timestamp, level, message }) => `${timestamp} [${level.toUpperCase()}] ${message}`)
@@ -30,23 +37,15 @@ const logger = winston.createLogger({
   transports: [ new winston.transports.Console() ]
 });
 
-// Глобальные ловцы ошибок
-process.on('unhandledRejection', err => logger.error(`unhandledRejection: ${err.message}`));
-process.on('uncaughtException', err => {
-  logger.error(`uncaughtException: ${err.message}`);
-  process.exit(1);
-});
+process.on('unhandledRejection', err => logger.error(`UNHANDLED: ${err.message}`));
+process.on('uncaughtException', err => { logger.error(`UNCAUGHT: ${err.message}`); process.exit(1); });
 
 //--------------------------------------------------
-// ─── ВСПОМОГАТЕЛЬНАЯ ФУНКЦИЯ ДЛЯ BITRIX ──────────
+// ─── ФУНКЦИЯ ВЗАИМОДЕЙСТВИЯ С BITRIX ─────────────
 //--------------------------------------------------
 async function btrx(method, params = {}) {
   try {
-    const { data } = await axios.post(
-      `${BITRIX_URL}/${method}`,
-      qs.stringify(params),
-      { headers: { 'Content-Type': 'application/x-www-form-urlencoded' } }
-    );
+    const { data } = await axios.post(`${BITRIX_URL}/${method}`, null, { params });
     if (data.error) throw new Error(`${method}: ${data.error_description || data.error}`);
     return data.result;
   } catch (err) {
@@ -55,17 +54,16 @@ async function btrx(method, params = {}) {
   }
 }
 
-// Пагинация Bitrix24 («start» / «next»)
+// Пагинация (tasks.task.list возвращает next)
 async function btrxPaged(method, params = {}, key = 'tasks') {
-  let start = 0;
-  let all   = [];
+  let start = 0, collected = [];
   while (true) {
     const chunk = await btrx(method, { ...params, start });
-    all = all.concat(key ? chunk[key] || [] : chunk);
+    collected = collected.concat(key ? chunk[key] || [] : chunk);
     if (!chunk.next) break;
     start = chunk.next;
   }
-  return all;
+  return collected;
 }
 
 //--------------------------------------------------
@@ -74,50 +72,52 @@ async function btrxPaged(method, params = {}, key = 'tasks') {
 async function copyDeal(dealId) {
   logger.info(`▶️  Копирование сделки ${dealId}`);
 
-  // 1️⃣ Получаем исходную сделку
+  // 1️⃣ Исходная сделка
   const deal = await btrx('crm.deal.get', { id: dealId });
   if (!deal) throw new Error(`Сделка ${dealId} не найдена`);
 
   // 2️⃣ Создаём новую сделку
-  const { id: newDealId } = await btrx('crm.deal.add', {
+  const newDealRes = await btrx('crm.deal.add', {
     fields: {
       TITLE: deal.TITLE,
       CATEGORY_ID,
       STAGE_ID,
       ASSIGNED_BY_ID: deal.ASSIGNED_BY_ID
-      // при необходимости добавьте свои поля ↓↓↓
-      // UF_CRM_XYZ: deal.UF_CRM_XYZ
     }
   });
+  const newDealId = typeof newDealRes === 'object' ? newDealRes.id || newDealRes.ID : newDealRes;
   logger.info(`✅ Создана новая сделка ${newDealId}`);
 
-  // 3️⃣ Получаем все открытые задачи, привязанные к исходной сделке
+  // 3️⃣ Все открытые задачи исходной сделки
   const tasks = await btrxPaged('tasks.task.list', {
     filter: {
-      '!=STATUS': 5,                       // исключаем завершённые
-      UF_CRM_TASK: [`D_${dealId}`]         // связь с «старой» сделкой
+      'UF_CRM_TASK': [`D_${dealId}`],
+      '!=STATUS': 5 // исключаем завершённые
     },
-    select: ['ID', 'TITLE', 'RESPONSIBLE_ID', 'DESCRIPTION']
+    select: ['ID','TITLE','RESPONSIBLE_ID','DESCRIPTION']
   });
   logger.info(`📌 Найдено задач: ${tasks.length}`);
 
-  // 4️⃣ Копируем задачи последовательно (избегаем 502 от Bitrix)
+  // 4️⃣ Копируем задачи с ограничением параллелизма
   let copied = 0;
-  for (const t of tasks) {
-    try {
-      const { task } = await btrx('tasks.task.add', {
+  for (let i = 0; i < tasks.length; i += PARALLEL_TASKS) {
+    const slice = tasks.slice(i, i + PARALLEL_TASKS);
+    const results = await Promise.allSettled(slice.map(t =>
+      btrx('tasks.task.add', {
         fields: {
           TITLE: t.TITLE,
           RESPONSIBLE_ID: t.RESPONSIBLE_ID,
           DESCRIPTION: t.DESCRIPTION || '',
           UF_CRM_TASK: [`D_${newDealId}`]
         }
-      });
-      logger.info(`   • Задача ${task.id} скопирована`);
-      copied += 1;
-    } catch (e) {
-      logger.error(`   • Ошибка копирования ${t.ID}: ${e.message}`);
-    }
+      })
+      .then(r => {
+        const id = typeof r === 'object' ? r.task?.id || r.id : r;
+        logger.info(`   • Задача ${id} скопирована`);
+        copied++;
+      })
+      .catch(e => logger.error(`   • Ошибка копии задачи ${t.ID}: ${e.message}`))
+    ));
   }
 
   return { oldDeal: dealId, newDeal: newDealId, tasksCopied: copied };
@@ -129,23 +129,16 @@ async function copyDeal(dealId) {
 const app = express();
 app.use(express.json());
 
-// Healthcheck
-app.get('/healthcheck', (req, res) => res.json({ status: 'ok' }));
+app.get('/healthcheck', (req,res) => res.json({ status: 'ok' }));
 
-// Основной роут
 app.post('/', async (req, res) => {
   const { deal_id } = req.body;
   if (!deal_id) return res.status(400).send('Параметр deal_id обязателен');
 
   try {
-    const ids     = Array.isArray(deal_id) ? deal_id : [deal_id];
+    const ids = Array.isArray(deal_id) ? deal_id : [deal_id];
     const results = [];
-
-    for (const id of ids) {
-      const result = await copyDeal(id);
-      results.push(result);
-    }
-
+    for (const id of ids) results.push(await copyDeal(id));
     res.json({ ok: true, results });
   } catch (err) {
     res.status(500).send(err.message);
