@@ -2,20 +2,21 @@
 // ------------------------------------------------------
 // Копирует сделку в новую воронку и переносит все её открытые задачи.
 // Запуск:
-//   node bitrix_deal_task_copier.js <SOURCE_DEAL_ID> <TARGET_CATEGORY_ID>
+//   node bitrix_deal_task_copier.js <SOURCE_DEAL_ID> [TARGET_CATEGORY_ID]
 // Параметры в .env:
 //   BITRIX_URL           – https://your-domain.bitrix24.ru/rest/1/xxx
-//   TARGET_CATEGORY_ID   – ID воронки (если не передан CLI)
+//   TARGET_CATEGORY_ID   – ID воронки (по умолчанию 14)
 
 require('dotenv').config();
 const axios   = require('axios');
 const winston = require('winston');
+const readline = require('readline');
 
 //──────────────────────────────────────────────────────────────────────────────
 // Настройки
 //──────────────────────────────────────────────────────────────────────────────
 const BITRIX_URL         = process.env.BITRIX_URL;
-const DEFAULT_CATEGORY_ID = Number(process.env.TARGET_CATEGORY_ID || 0);
+const DEFAULT_CATEGORY_ID = Number(process.env.TARGET_CATEGORY_ID || 14);
 if (!BITRIX_URL) {
   console.error('❌ BITRIX_URL не задан в .env');
   process.exit(1);
@@ -73,7 +74,6 @@ async function copyDeal(srcDealId, targetCategoryId) {
   // Формируем поля для новой сделки, копируя все кроме ID, CATEGORY_ID, STAGE_ID, DATE_CREATE
   const { ID, CATEGORY_ID, STAGE_ID, DATE_CREATE, ...fields } = deal;
   fields.CATEGORY_ID = targetCategoryId;
-  // При необходимости можно задать STAGE_ID = default или из .env
 
   // Создаём новую сделку
   const res = await btrx('crm.deal.add', { fields }, false);
@@ -88,7 +88,6 @@ async function copyDeal(srcDealId, targetCategoryId) {
 async function copyTasks(srcDealId, dstDealId) {
   logger.info(`▶️ Копируем задачи из D_${srcDealId} → D_${dstDealId}`);
 
-  // Получаем открытые задачи по привязке UF_CRM_TASK
   const tasks = await btrxPaged('tasks.task.list', {
     filter: {
       'UF_CRM_TASK': `D_${srcDealId}`,
@@ -129,50 +128,74 @@ async function copyTasks(srcDealId, dstDealId) {
   logger.info(`✅ Скопировано задач: ${copied}`);
   return copied;
 }
+
 async function copyActivities(srcDealId, dstDealId) {
   logger.info(`▶️ Копируем активности из сделки ${srcDealId} → ${dstDealId}`);
-const activities = await btrxPaged('crm.activity.list', {
-  filter: {
-    'OWNER_TYPE_ID': 2, // 2 = сделка
-    'OWNER_ID': srcDealId
-  }
-});
-for (const act of activities) {
-  try {
-    const copy = await btrx('crm.activity.add', {
-      fields: {
-        SUBJECT: act.SUBJECT,
-        TYPE_ID: act.TYPE_ID,                 // Тип (звонок, встреча, и т.д.)
-        DIRECTION: act.DIRECTION,             // Входящий / исходящий
-        START_TIME: act.START_TIME,
-        END_TIME: act.END_TIME,
-        RESPONSIBLE_ID: act.RESPONSIBLE_ID,
-        DESCRIPTION: act.DESCRIPTION,
-        COMMUNICATIONS: act.COMMUNICATIONS || [],
-        OWNER_ID: dstDealId,
-        OWNER_TYPE_ID: 2                     // Сделка
-      }
-    }, false);
 
-    logger.info(`   • Скопировано дело: ${act.SUBJECT}`);
-  } catch (err) {
-    logger.warn(`   ⚠️ Ошибка при копировании дела "${act.SUBJECT}": ${err.message}`);
+  const activities = await btrxPaged('crm.activity.list', {
+    filter: {
+      'OWNER_TYPE_ID': 2, // 2 = сделка
+      'OWNER_ID': srcDealId
+    }
+  });
+
+  for (const act of activities) {
+    try {
+      await btrx('crm.activity.add', {
+        fields: {
+          SUBJECT: act.SUBJECT,
+          TYPE_ID: act.TYPE_ID,
+          DIRECTION: act.DIRECTION,
+          START_TIME: act.START_TIME,
+          END_TIME: act.END_TIME,
+          RESPONSIBLE_ID: act.RESPONSIBLE_ID,
+          DESCRIPTION: act.DESCRIPTION,
+          COMMUNICATIONS: act.COMMUNICATIONS || [],
+          OWNER_ID: dstDealId,
+          OWNER_TYPE_ID: 2
+        }
+      }, false);
+      logger.info(`   • Скопировано дело: ${act.SUBJECT}`);
+    } catch (err) {
+      logger.warn(`   ⚠️ Ошибка при копировании дела "${act.SUBJECT}": ${err.message}`);
+    }
   }
 }
+
 //──────────────────────────────────────────────────────────────────────────────
-}// Основная логика CLI
+// Основная логика CLI
 //──────────────────────────────────────────────────────────────────────────────
 (async () => {
   const [srcId, cliCategory] = process.argv.slice(2);
+
   if (!srcId) {
-    console.log('Usage: node bitrix_deal_task_copier.js <SOURCE_DEAL_ID> [TARGET_CATEGORY_ID]');
-    process.exit(0);
-  }
-  const targetCat = Number(cliCategory) || DEFAULT_CATEGORY_ID;
-  if (!targetCat) {
-    console.error('❌ Не указан TARGET_CATEGORY_ID в .env или параметрах CLI');
+    console.log('⚠️ Укажи ID исходной сделки!');
+    console.log('Пример: node index.js 1234');
     process.exit(1);
   }
+
+  let targetCat = Number(cliCategory) || DEFAULT_CATEGORY_ID;
+
+  if (!targetCat) {
+    // Запрашиваем вручную через консоль (на всякий случай)
+    const rl = readline.createInterface({
+      input: process.stdin,
+      output: process.stdout
+    });
+
+    targetCat = await new Promise(resolve => {
+      rl.question('🛠 Введите ID воронки, куда копируем сделку: ', answer => {
+        rl.close();
+        resolve(Number(answer));
+      });
+    });
+
+    if (!targetCat || isNaN(targetCat)) {
+      console.error('❌ Некорректный ID воронки');
+      process.exit(1);
+    }
+  }
+
   try {
     const newDeal = await copyDeal(srcId, targetCat);
     await copyTasks(srcId, newDeal);
