@@ -160,7 +160,7 @@ for (const act of activities) {
   }
 }
 //──────────────────────────────────────────────────────────────────────────────
-// Основная логика CLI
+}// Основная логика CLI
 //──────────────────────────────────────────────────────────────────────────────
 (async () => {
   const [srcId, cliCategory] = process.argv.slice(2);
@@ -173,10 +173,10 @@ for (const act of activities) {
     console.error('❌ Не указан TARGET_CATEGORY_ID в .env или параметрах CLI');
     process.exit(1);
   }
-
   try {
     const newDeal = await copyDeal(srcId, targetCat);
     await copyTasks(srcId, newDeal);
+    await copyActivities(srcId, newDeal);
   } catch (err) {
     logger.error(err.stack || err.message);
     process.exit(1);
