@@ -1,5 +1,5 @@
 // bitrix_deal_task_copier.js — Расширенный скрипт копирования сделки и задач
-// Переносит сделку + все задачи (включая закрытые) + комментарии + чек-листы
+// Переносит сделку + все задачи (включая закрытые) + комментарии + чек-листы + активности
 
 require('dotenv').config();
 const axios = require('axios');
@@ -99,33 +99,12 @@ async function copyComments(oldTaskId, newTaskId) {
   }
 }
 
-(async () => {
-  const deals = await btrx('crm.deal.list', {
-    order: { ID: 'DESC' },
-    filter: { CATEGORY_ID: 70 },
-    select: ['ID', 'TITLE'],
-    limit: 1
-  });
-  const srcId = deals[0]?.ID;
-  if (!srcId) {
-    logger.error('❌ Сделка в воронке 70 не найдена');
-    process.exit(1);
-  }
-
-  const check = await btrx('crm.deal.list', {
-    filter: { CATEGORY_ID: DEFAULT_CATEGORY_ID, TITLE: deals[0].TITLE },
-    select: ['ID']
-  });
-  if (check.length > 0) {
-    logger.warn(`⚠️ Сделка уже есть в целевой воронке (ID ${check[0].ID})`);
-    process.exit(0);
-  }
 async function copyActivities(srcDealId, dstDealId) {
   logger.info(`▶️ Копируем активности из сделки ${srcDealId} → ${dstDealId}`);
 
   const activities = await btrxPaged('crm.activity.list', {
     filter: {
-      'OWNER_TYPE_ID': 2, // 2 = сделка
+      'OWNER_TYPE_ID': 2,
       'OWNER_ID': srcDealId
     }
   });
@@ -153,12 +132,7 @@ async function copyActivities(srcDealId, dstDealId) {
   }
 }
 
-//──────────────────────────────────────────────────────────────────────────────
-// Основная логика CLI
-//──────────────────────────────────────────────────────────────────────────────
-// Основная логика CLI
 (async () => {
-  // Берём последнюю сделку из воронки 70
   logger.info(`🔍 Ищем последнюю сделку из воронки 70...`);
   const deals = await btrx('crm.deal.list', {
     order: { ID: 'DESC' },
@@ -175,25 +149,24 @@ async function copyActivities(srcDealId, dstDealId) {
 
   logger.info(`📎 Найдена сделка ${srcId}`);
 
-  // Проверяем, не скопирована ли она уже в воронку 14
   const check = await btrx('crm.deal.list', {
     filter: {
-      CATEGORY_ID: 14,
-      'TITLE': deals[0].TITLE // по имени
+      CATEGORY_ID: DEFAULT_CATEGORY_ID,
+      TITLE: deals[0].TITLE
     },
     select: ['ID']
   });
 
   if (check.length > 0) {
-    logger.warn(`⚠️ Сделка с таким названием уже есть в воронке 14 (ID ${check[0].ID}) – копирование отменено`);
+    logger.warn(`⚠️ Сделка уже есть в целевой воронке (ID ${check[0].ID})`);
     process.exit(0);
   }
 
-  const targetCat = 14;
   try {
     const newDealId = await copyDeal(srcId, DEFAULT_CATEGORY_ID);
     logger.info(`✅ Сделка скопирована: ${newDealId}`);
     await copyTasks(srcId, newDealId);
+    await copyActivities(srcId, newDealId);
   } catch (err) {
     logger.error(err.stack || err.message);
     process.exit(1);
