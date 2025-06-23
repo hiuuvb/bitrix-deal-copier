@@ -122,6 +122,7 @@ async function copyTasks(srcDealId, dstDealId) {
       copied++;
     } catch (e) {
       logger.error(`   • Ошибка копии задачи ${t.ID}: ${e.message}`);
+      logger.error(`   • Данные задачи: ${JSON.stringify(t)}`);
     }
   }
 
@@ -167,44 +168,38 @@ async function copyActivities(srcDealId, dstDealId) {
 //──────────────────────────────────────────────────────────────────────────────
 // Основная логика CLI
 (async () => {
-  // 🧠 Вместо ручного ввода — автоматически берём последнюю сделку
-  logger.info(`🔍 Ищем последнюю сделку...`);
+  // Берём последнюю сделку из воронки 70
+  logger.info(`🔍 Ищем последнюю сделку из воронки 70...`);
   const deals = await btrx('crm.deal.list', {
     order: { ID: 'DESC' },
-    filter: {},
-    select: ['ID'],
+    filter: { CATEGORY_ID: 70 },
+    select: ['ID', 'TITLE'],
     limit: 1
   });
 
   const srcId = deals[0]?.ID;
   if (!srcId) {
-    logger.error('❌ Не удалось найти последнюю сделку');
+    logger.error('❌ Не удалось найти сделку в воронке 70');
     process.exit(1);
   }
+
   logger.info(`📎 Найдена сделка ${srcId}`);
 
-  const targetCat = DEFAULT_CATEGORY_ID || 14; // если .env не указан
-  
-  if (!targetCat) {
-    // Запрашиваем вручную через консоль (на всякий случай)
-    const rl = readline.createInterface({
-      input: process.stdin,
-      output: process.stdout
-    });
+  // Проверяем, не скопирована ли она уже в воронку 14
+  const check = await btrx('crm.deal.list', {
+    filter: {
+      CATEGORY_ID: 14,
+      'TITLE': deals[0].TITLE // по имени
+    },
+    select: ['ID']
+  });
 
-    targetCat = await new Promise(resolve => {
-      rl.question('🛠 Введите ID воронки, куда копируем сделку: ', answer => {
-        rl.close();
-        resolve(Number(answer));
-      });
-    });
-
-    if (!targetCat || isNaN(targetCat)) {
-      console.error('❌ Некорректный ID воронки');
-      process.exit(1);
-    }
+  if (check.length > 0) {
+    logger.warn(`⚠️ Сделка с таким названием уже есть в воронке 14 (ID ${check[0].ID}) – копирование отменено`);
+    process.exit(0);
   }
 
+  const targetCat = 14;
   try {
     const newDeal = await copyDeal(srcId, targetCat);
     await copyTasks(srcId, newDeal);
