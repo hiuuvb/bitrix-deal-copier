@@ -92,7 +92,6 @@ async function copyTasks(srcDealId, dstDealId) {
   const tasks = await btrxPaged('tasks.task.list', {
     filter: {
       'UF_CRM_TASK': `D_${srcDealId}`,
-      '!STATUS': 5
     },
     select: ['ID','TITLE','RESPONSIBLE_ID','DESCRIPTION','DEADLINE','PRIORITY','START_DATE_PLAN','END_DATE_PLAN']
   });
@@ -116,6 +115,7 @@ async function copyTasks(srcDealId, dstDealId) {
           START_DATE_PLAN: t.START_DATE_PLAN,
           END_DATE_PLAN: t.END_DATE_PLAN,
           UF_CRM_TASK: [`D_${dstDealId}`]
+          STATUS: 2 // статус "Открыта"
         }
       }, false);
       const newId = typeof r === 'object' ? r.task?.id || r.id || r : r;
@@ -129,7 +129,36 @@ async function copyTasks(srcDealId, dstDealId) {
   logger.info(`✅ Скопировано задач: ${copied}`);
   return copied;
 }
+async function copyActivities(srcDealId, dstDealId) {
+  logger.info(`▶️ Копируем активности из сделки ${srcDealId} → ${dstDealId}`);
+const activities = await btrxPaged('crm.activity.list', {
+  filter: {
+    'OWNER_TYPE_ID': 2, // 2 = сделка
+    'OWNER_ID': srcDealId
+  }
+});
+for (const act of activities) {
+  try {
+    const copy = await btrx('crm.activity.add', {
+      fields: {
+        SUBJECT: act.SUBJECT,
+        TYPE_ID: act.TYPE_ID,                 // Тип (звонок, встреча, и т.д.)
+        DIRECTION: act.DIRECTION,             // Входящий / исходящий
+        START_TIME: act.START_TIME,
+        END_TIME: act.END_TIME,
+        RESPONSIBLE_ID: act.RESPONSIBLE_ID,
+        DESCRIPTION: act.DESCRIPTION,
+        COMMUNICATIONS: act.COMMUNICATIONS || [],
+        OWNER_ID: dstDealId,
+        OWNER_TYPE_ID: 2                     // Сделка
+      }
+    }, false);
 
+    logger.info(`   • Скопировано дело: ${act.SUBJECT}`);
+  } catch (err) {
+    logger.warn(`   ⚠️ Ошибка при копировании дела "${act.SUBJECT}": ${err.message}`);
+  }
+}
 //──────────────────────────────────────────────────────────────────────────────
 // Основная логика CLI
 //──────────────────────────────────────────────────────────────────────────────
