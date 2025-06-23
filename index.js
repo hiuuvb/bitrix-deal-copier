@@ -114,7 +114,7 @@ async function copyTasks(srcDealId, dstDealId) {
           PRIORITY: t.PRIORITY,
           START_DATE_PLAN: t.START_DATE_PLAN,
           END_DATE_PLAN: t.END_DATE_PLAN,
-          UF_CRM_TASK: [`D_${dstDealId}`]
+          UF_CRM_TASK: [`D_${dstDealId}`],
           STATUS: 2 // статус "Открыта"
         }
       }, false);
