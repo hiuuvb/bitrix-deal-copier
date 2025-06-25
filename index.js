@@ -217,7 +217,7 @@ async function copyActivities(srcDealId, dstDealId) {
 
   if (exists.length) {
     const existingDealId = exists[0].ID;
-    logger.warn(`⚠️ Сделка уже есть в воронке ${DEFAULTATEGORY_ID} (ID ${existingDealId}), копируем задачи и активности...`);
+    logger.warn(`⚠️ Сделка уже есть в воронке ${DEFAULT_CATEGORY_ID} (ID ${existingDealId}), копируем задачи и активности...`);
     await copyTasks(srcId, existingDealId);
     await copyActivities(srcId, existingDealId);
     logger.info(`🎉 Задачи и активности успешно скопированы в существующую сделку ${existingDealId}`);
