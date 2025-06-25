@@ -77,6 +77,12 @@ async function copyTasks(srcDealId, dstDealId) {
   }, 'tasks');
 
   for (const t of tasks) {
+    // Пропустить задачи без заголовка, чтобы избежать ERR_BAD_REQUEST
+    if (!t.TITLE || !t.TITLE.trim()) {
+      logger.warn(`⚠️ Пропускаем задачу ${t.ID}: нет заголовка`);
+      continue;
+    }
+
     const taskData = {
       TITLE:           t.TITLE,
       RESPONSIBLE_ID:  t.RESPONSIBLE_ID,
@@ -180,7 +186,7 @@ async function copyActivities(srcDealId, dstDealId) {
       }, false);
       logger.info(`   • Скопировано дело: ${act.SUBJECT}`);
     } catch (err) {
-      logger.warn(`   ⚠️ Ошибка при копировании дела \"${act.SUBJECT}\": ${err.message}`);
+      logger.warn(`   ⚠️ Ошибка при копировании дела "${act.SUBJECT}": ${err.message}`);
     }
   }
 }
@@ -211,7 +217,7 @@ async function copyActivities(srcDealId, dstDealId) {
 
   if (exists.length) {
     const existingDealId = exists[0].ID;
-    logger.warn(`⚠️ Сделка уже есть в воронке ${DEFAULT_CATEGORY_ID} (ID ${existingDealId}), копируем задачи и активности...`);
+    logger.warn(`⚠️ Сделка уже есть в воронке ${DEFAULTATEGORY_ID} (ID ${existingDealId}), копируем задачи и активности...`);
     await copyTasks(srcId, existingDealId);
     await copyActivities(srcId, existingDealId);
     logger.info(`🎉 Задачи и активности успешно скопированы в существующую сделку ${existingDealId}`);
