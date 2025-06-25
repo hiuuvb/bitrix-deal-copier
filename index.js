@@ -59,7 +59,6 @@ async function copyDeal(srcDealId, targetCategoryId) {
 
   fields.CATEGORY_ID = targetCategoryId;
   const res = await btrx('crm.deal.add', { fields }, false);
-  // В зависимости от формата ответа
   return typeof res === 'object' ? (res.result || res.id || res) : res;
 }
 
@@ -68,7 +67,6 @@ const taskMap = new Map();
 
 // Копирование всех задач и пост-обработка последней незавершённой
 async function copyTasks(srcDealId, dstDealId) {
-  // 1) Получаем все задачи, привязанные к srcDealId
   const tasks = await btrxPaged('tasks.task.list', {
     filter: { 'UF_CRM_TASK': `D_${srcDealId}` },
     select: [
@@ -78,7 +76,6 @@ async function copyTasks(srcDealId, dstDealId) {
     ]
   }, 'tasks');
 
-  // 2) Копируем каждую задачу, сохраняя её статус
   for (const t of tasks) {
     const taskData = {
       TITLE:           t.TITLE,
@@ -89,7 +86,7 @@ async function copyTasks(srcDealId, dstDealId) {
       START_DATE_PLAN: t.START_DATE_PLAN,
       END_DATE_PLAN:   t.END_DATE_PLAN,
       UF_CRM_TASK:     [`D_${dstDealId}`],
-      STATUS:          t.STATUS    // сохраняем открытые и закрытые
+      STATUS:          t.STATUS
     };
     const added = await btrx('tasks.task.add', { fields: taskData }, false);
     const newTaskId = added.task?.id || added.id || added;
@@ -100,21 +97,18 @@ async function copyTasks(srcDealId, dstDealId) {
     await copyComments(t.ID, newTaskId);
   }
 
-  // 3) Находим последнюю незавершённую задачу по дате изменения
   const openEntries = Array.from(taskMap.entries()).filter(([,info]) => info.status !== 5);
   if (openEntries.length) {
     openEntries.sort((a, b) => new Date(b[1].changed) - new Date(a[1].changed));
     const [, lastInfo] = openEntries[0];
     if (lastInfo.status === 5) {
-      // если по ошибке статус = 5 в копии, переоткрываем
       await btrx('tasks.task.update', {
         taskId: lastInfo.newId,
-        fields: { STATUS: 2 }  // 2 = Открыта
+        fields: { STATUS: 2 }
       });
       logger.info(`♻️ Переоткрыта задача ${lastInfo.newId}`);
     }
   } else {
-    // 4) Если незавершённых нет, создаём задачу из последней активности
     const acts = await btrxPaged('crm.activity.list', {
       filter: { OWNER_TYPE_ID:2, OWNER_ID: srcDealId },
       order: { DEADLINE: 'DESC' }
@@ -186,7 +180,7 @@ async function copyActivities(srcDealId, dstDealId) {
       }, false);
       logger.info(`   • Скопировано дело: ${act.SUBJECT}`);
     } catch (err) {
-      logger.warn(`   ⚠️ Ошибка при копировании дела "${act.SUBJECT}": ${err.message}`);
+      logger.warn(`   ⚠️ Ошибка при копировании дела \"${act.SUBJECT}\": ${err.message}`);
     }
   }
 }
@@ -208,15 +202,20 @@ async function copyActivities(srcDealId, dstDealId) {
   }
   logger.info(`📎 Найдена сделка ${srcId}`);
 
-  // Проверим, нет ли уже копии в целевой воронке
+  // Проверим, есть ли уже сделка в целевой воронке
   const exists = await btrx('crm.deal.list', {
-    filter:   { CATEGORY_ID: DEFAULT_CATEGORY_ID, TITLE: deals[0].TITLE },
-    select:   ['ID'],
-    limit:    1
+    filter: { CATEGORY_ID: DEFAULT_CATEGORY_ID, TITLE: deals[0].TITLE },
+    select: ['ID'],
+    limit: 1
   });
+
   if (exists.length) {
-    logger.warn(`⚠️ Сделка уже есть в воронке ${DEFAULT_CATEGORY_ID} (ID ${exists[0].ID})`);
-    process.exit(0);
+    const existingDealId = exists[0].ID;
+    logger.warn(`⚠️ Сделка уже есть в воронке ${DEFAULT_CATEGORY_ID} (ID ${existingDealId}), копируем задачи и активности...`);
+    await copyTasks(srcId, existingDealId);
+    await copyActivities(srcId, existingDealId);
+    logger.info(`🎉 Задачи и активности успешно скопированы в существующую сделку ${existingDealId}`);
+    return;
   }
 
   try {
