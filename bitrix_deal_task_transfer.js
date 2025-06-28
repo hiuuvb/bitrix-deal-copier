@@ -1,108 +1,80 @@
+require('dotenv').config();
 const axios = require('axios');
-const BITRIX_URL = process.env.BITRIX_URL;
-const DEFAULT_RESPONSIBLE_ID = Number(process.env.DEFAULT_RESPONSIBLE_ID || 1);
 
-// 📌 1. Копируем сделку
-async function copyDeal(dealId, targetCategoryId) {
-  // Получаем данные по исходной сделке
-  const { data: original } = await axios.post(`${BITRIX_URL}/crm.deal.get.json`, {
-    id: dealId
-  });
+const BITRIX_URL          = process.env.BITRIX_URL;
+const DEFAULT_CATEGORY_ID = Number(process.env.TARGET_CATEGORY_ID || 14);
+const DEFAULT_RESPONSIBLE = Number(process.env.DEFAULT_RESPONSIBLE_ID || 1);
 
-  const deal = original.result;
-  if (!deal) throw new Error(`Сделка с id ${dealId} не найдена`);
-
-  // Готовим данные для новой сделки
-  const newDeal = {
-    TITLE: `${deal.TITLE} (копия)`,
-    TYPE_ID: deal.TYPE_ID,
-    STAGE_ID: `C${targetCategoryId}:NEW`,
-    CATEGORY_ID: targetCategoryId,
-    ASSIGNED_BY_ID: deal.ASSIGNED_BY_ID || DEFAULT_RESPONSIBLE_ID,
-    CONTACT_ID: deal.CONTACT_ID || null,
-    COMPANY_ID: deal.COMPANY_ID || null,
-    BEGINDATE: deal.BEGINDATE,
-    CLOSEDATE: deal.CLOSEDATE,
-    CURRENCY_ID: deal.CURRENCY_ID,
-    OPPORTUNITY: deal.OPPORTUNITY,
-    COMMENTS: deal.COMMENTS
-  };
-
-  const { data: created } = await axios.post(`${BITRIX_URL}/crm.deal.add.json`, {
-    fields: newDeal
-  });
-
-  if (!created.result) throw new Error('Не удалось создать новую сделку');
-  return created.result;
+// Универсальный вызов Bitrix REST API
+async function btrx(method, params = {}, asQuery = true) {
+  const url = `${BITRIX_URL}/${method}`;
+  const cfg = asQuery ? { params } : {};
+  const body = asQuery ? null : params;
+  const { data } = await axios.post(url, body, cfg);
+  if (data.error) throw new Error(`${method}: ${data.error_description || data.error}`);
+  return data.result;
 }
 
-// 📌 2. Копируем завершённые задачи и открываем последнюю
-async function copyTasks(oldDealId, newDealId) {
-  // Получить задачи по сделке
-  const { data: response } = await axios.post(`${BITRIX_URL}/tasks.task.list`, {
-    filter: {
-      'UF_CRM_TASK': `D_${oldDealId}`
-    }
-  });
+// Получить все задачи, связанные с сделкой
+async function getTasksForDeal(dealId) {
+  return await btrx('tasks.task.list', {
+    filter: { 'UF_CRM_TASK': `D_${dealId}` },
+    select: ['ID','TITLE','RESPONSIBLE_ID','DESCRIPTION','START_DATE_PLAN','END_DATE_PLAN','DEADLINE','PRIORITY','STATUS','CHANGED_DATE']
+  }, true).then(r => r.tasks || []);
+}
 
-  const tasks = response.result.tasks || [];
+// Копировать сделку (без задач)
+async function copyDeal(srcId, catId) {
+  const deal = await btrx('crm.deal.get', { id: srcId });
+  const { ID, CATEGORY_ID, STAGE_ID, ...fields } = deal;
+  fields.CATEGORY_ID = catId;
+  const res = await btrx('crm.deal.add', { fields }, false);
+  return res.result || res.id || res;
+}
 
-  if (!tasks.length) return;
+// Копировать задачи
+async function copyTasks(srcDealId, dstDealId) {
+  const tasks = await getTasksForDeal(srcDealId);
 
-  // Найти последнюю по дате завершённую
-  const sorted = tasks
-    .filter(t => t.status === 5) // завершённые
-    .sort((a, b) => new Date(b.updatedDate) - new Date(a.updatedDate));
-
-  for (let task of tasks) {
-    const isLastClosed = task.id === sorted[0]?.id;
-    const newTaskFields = {
-      TITLE: task.title,
-      DESCRIPTION: task.description,
-      RESPONSIBLE_ID: task.responsibleId || DEFAULT_RESPONSIBLE_ID,
-      CREATED_BY: task.createdBy,
-      UF_CRM_TASK: [`D_${newDealId}`]
+  for (const t of tasks) {
+    // Все задачи делаем открытыми (статус 2)
+    const fields = {
+      TITLE:           t.TITLE?.trim() || `Задача #${t.ID}`,
+      RESPONSIBLE_ID:  t.RESPONSIBLE_ID > 0 ? t.RESPONSIBLE_ID : DEFAULT_RESPONSIBLE,
+      DESCRIPTION:     t.DESCRIPTION || '',
+      START_DATE_PLAN: t.START_DATE_PLAN || undefined,
+      END_DATE_PLAN:   t.END_DATE_PLAN || undefined,
+      DEADLINE:        t.DEADLINE || undefined,
+      PRIORITY:        t.PRIORITY || 1,
+      UF_CRM_TASK:     [`D_${dstDealId}`],
+      STATUS:          2 // открытая!
     };
-
-    if (isLastClosed) {
-      // Открываем заново
-      newTaskFields.STATUS = 2;
-    }
-
-    await axios.post(`${BITRIX_URL}/tasks.task.add`, {
-      fields: newTaskFields
-    });
+    await btrx('tasks.task.add', { fields }, false);
   }
 }
 
-// 📌 3. Копируем активности (звонки, встречи и т.п.)
-async function copyActivities(oldDealId, newDealId) {
-  const { data: res } = await axios.post(`${BITRIX_URL}/crm.activity.list`, {
-    filter: { 'OWNER_TYPE_ID': 2, 'OWNER_ID': oldDealId } // 2 = сделка
-  });
+// Копировать активности (дела)
+async function copyActivities(srcDealId, dstDealId) {
+  const acts = await btrx('crm.activity.list', {
+    filter: { OWNER_TYPE_ID: 2, OWNER_ID: srcDealId }
+  }, true).then(r => r.activities || []);
 
-  const activities = res.result || [];
-
-  for (let act of activities) {
-    const newAct = {
-      TYPE_ID: act.TYPE_ID,
-      SUBJECT: act.SUBJECT,
-      DESCRIPTION: act.DESCRIPTION,
-      COMPLETED: 'N',
-      RESPONSIBLE_ID: act.RESPONSIBLE_ID || DEFAULT_RESPONSIBLE_ID,
-      OWNER_ID: newDealId,
-      OWNER_TYPE_ID: 2 // сделка
+  for (const a of acts) {
+    const fields = {
+      SUBJECT:        a.SUBJECT?.trim() || `Дело #${a.ID}`,
+      TYPE_ID:        a.TYPE_ID,
+      DIRECTION:      a.DIRECTION,
+      START_TIME:     a.START_TIME,
+      END_TIME:       a.END_TIME,
+      RESPONSIBLE_ID: a.RESPONSIBLE_ID > 0 ? a.RESPONSIBLE_ID : DEFAULT_RESPONSIBLE,
+      DESCRIPTION:    a.DESCRIPTION || '',
+      COMMUNICATIONS: a.COMMUNICATIONS || [],
+      OWNER_ID:       dstDealId,
+      OWNER_TYPE_ID:  2,
+      COMPLETED:      'N'
     };
-
-    await axios.post(`${BITRIX_URL}/crm.activity.add`, {
-      fields: newAct
-    });
+    await btrx('crm.activity.add', { fields }, false);
   }
 }
 
-// 📦 Экспорт
-module.exports = {
-  copyDeal,
-  copyTasks,
-  copyActivities
-};
+module.exports = { copyDeal, copyTasks, copyActivities };
