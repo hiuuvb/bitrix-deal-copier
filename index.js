@@ -6,6 +6,7 @@ const { copyDeal, copyTasks, copyActivities } = require('./bitrix_deal_task_tran
 
 const PORT = process.env.PORT || 10000;
 
+// Логгер
 const logger = winston.createLogger({
   level: 'info',
   format: winston.format.combine(
@@ -15,11 +16,10 @@ const logger = winston.createLogger({
   transports: [new winston.transports.Console()]
 });
 
-// ❗️Вот здесь создаётся app — у тебя этого, судя по всему, нет
 const app = express();
 app.use(bodyParser.json());
 
-// Healthcheck
+// healthcheck
 app.get('/', (req, res) => res.send('Bitrix transfer server OK'));
 
 // Основной вебхук
@@ -29,23 +29,34 @@ app.post('/webhook', async (req, res) => {
 
   let deal_id = req.body?.deal_id || req.body?.ID || req.body?.id || null;
   if (!deal_id) {
-    logger.error('Нужно передать ID сделки!');
+    logger.error('❌ Нужно передать ID сделки!');
     return res.status(400).json({ error: 'Нужно передать ID сделки!' });
   }
+
   deal_id = Number(deal_id);
+  if (isNaN(deal_id)) {
+    logger.error('❌ ID сделки должен быть числом!');
+    return res.status(400).json({ error: 'ID сделки должен быть числом!' });
+  }
 
   try {
-    logger.info(`🚀 Копируем сделку с id ${deal_id}`);
+    logger.info(`🚀 Копируем сделку с ID ${deal_id} в категорию ${process.env.TARGET_CATEGORY_ID}`);
     const newDealId = await copyDeal(deal_id, Number(process.env.TARGET_CATEGORY_ID || 14));
-    logger.info(`✅ Новая сделка создана: ${newDealId}`);
+    logger.info(`✅ Сделка скопирована. Новый ID: ${newDealId}`);
+
     await copyTasks(deal_id, newDealId);
+    logger.info(`✅ Задачи скопированы`);
+
     await copyActivities(deal_id, newDealId);
+    logger.info(`✅ Активности скопированы`);
+
     res.json({ status: 'ok', newDealId });
   } catch (err) {
-    logger.error(err.stack || err.message);
+    logger.error(`❌ Ошибка при копировании: ${err.stack || err.message}`);
     res.status(500).json({ error: err.message });
   }
 });
 
-// ⬅️ И только после определения app — запускаем сервер
-app.listen(PORT, () => logger.info(`🚀 Сервер запущен на порту ${PORT}`));
+app.listen(PORT, () => {
+  logger.info(`🚀 Сервер запущен на порту ${PORT}`);
+});
