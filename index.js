@@ -1,15 +1,9 @@
-const { copyDeal, copyTasks, copyActivities } = require('./bitrix_deal_task_transfer');
 require('dotenv').config();
 const express = require('express');
 const bodyParser = require('body-parser');
 const winston = require('winston');
-
-// ✅ Сначала создаём app
-const app = express();
-
 const { copyDeal, copyTasks, copyActivities } = require('./bitrix_deal_task_transfer');
 
-// Затем всё остальное:
 const PORT = process.env.PORT || 10000;
 
 const logger = winston.createLogger({
@@ -18,15 +12,17 @@ const logger = winston.createLogger({
     winston.format.timestamp({ format: 'DD-MM-YYYY HH:mm:ss' }),
     winston.format.printf(({ timestamp, level, message }) => `${timestamp} [${level.toUpperCase()}] ${message}`)
   ),
-  transports: [ new winston.transports.Console() ]
+  transports: [new winston.transports.Console()]
 });
 
-// Миддлвары
+// ❗️Вот здесь создаётся app — у тебя этого, судя по всему, нет
+const app = express();
 app.use(bodyParser.json());
 
-// Роуты
+// Healthcheck
 app.get('/', (req, res) => res.send('Bitrix transfer server OK'));
 
+// Основной вебхук
 app.post('/webhook', async (req, res) => {
   logger.info('▶️  Пришёл запрос на копирование сделки');
   logger.info(`Request body: ${JSON.stringify(req.body)}`);
@@ -51,5 +47,5 @@ app.post('/webhook', async (req, res) => {
   }
 });
 
-// ⬅️ В конце запускаем сервер
+// ⬅️ И только после определения app — запускаем сервер
 app.listen(PORT, () => logger.info(`🚀 Сервер запущен на порту ${PORT}`));
