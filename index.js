@@ -1,9 +1,11 @@
 require('dotenv').config();
 const express = require('express');
 const bodyParser = require('body-parser');
+const axios = require('axios');
 const winston = require('winston');
-const { copyDeal, copyTasks, copyActivities } = require('./bitrix_deal_task_transfer');
 
+const BITRIX_URL = process.env.BITRIX_URL;
+const TARGET_CATEGORY_ID = Number(process.env.TARGET_CATEGORY_ID || 14);
 const PORT = process.env.PORT || 10000;
 
 const logger = winston.createLogger({
@@ -18,30 +20,49 @@ const logger = winston.createLogger({
 const app = express();
 app.use(bodyParser.json());
 
-// Проверка живости
-app.get('/', (req, res) => res.send('Bitrix transfer server OK'));
+app.get('/', (req, res) => res.send('Bitrix copier server OK'));
 
-// Вебхук для копирования
 app.post('/webhook', async (req, res) => {
-  logger.info('▶️  Пришёл запрос на копирование сделки');
-  logger.info(`Request body: ${JSON.stringify(req.body)}`);
-
-  let deal_id = req.body?.deal_id || req.body?.ID || req.body?.id || null;
+  let deal_id = Number(req.body?.deal_id || req.body?.ID || req.body?.id || 0);
   if (!deal_id) {
-    logger.error('Нужно передать ID сделки!');
-    return res.status(400).json({ error: 'Нужно передать ID сделки!' });
+    logger.error('Не указан deal_id!');
+    return res.status(400).json({ error: 'Не указан deal_id!' });
   }
-  deal_id = Number(deal_id);
+  logger.info(`Поступил запрос на копирование сделки: ${deal_id}`);
 
   try {
-    logger.info(`🚀 Копируем сделку с id ${deal_id}`);
-    const newDealId = await copyDeal(deal_id, Number(process.env.TARGET_CATEGORY_ID || 14));
-    logger.info(`✅ Новая сделка создана: ${newDealId}`);
-    await copyTasks(deal_id, newDealId);
-    await copyActivities(deal_id, newDealId);
-    res.json({ status: 'ok', newDealId });
+    // Получаем исходную сделку
+    const { data: getResp } = await axios.post(`${BITRIX_URL}/crm.deal.get`, { id: deal_id });
+    if (getResp.error) throw new Error(getResp.error_description || getResp.error);
+
+    const deal = getResp.result;
+    const dealTitle = deal.TITLE;
+
+    // Проверяем — не скопирована ли уже такая сделка в нужную категорию
+    const { data: listResp } = await axios.post(`${BITRIX_URL}/crm.deal.list`, {
+      filter: { CATEGORY_ID: TARGET_CATEGORY_ID, TITLE: dealTitle },
+      select: ['ID', 'TITLE'],
+      order: { ID: 'DESC' },
+      limit: 1
+    });
+
+    const exists = listResp.result && listResp.result.length > 0;
+    if (exists) {
+      logger.warn(`Сделка уже скопирована (ID ${listResp.result[0].ID})`);
+      return res.status(200).json({ status: 'already_exists', newDealId: listResp.result[0].ID });
+    }
+
+    // Копируем
+    const { ID, CATEGORY_ID, STAGE_ID, ...fields } = deal;
+    fields.CATEGORY_ID = TARGET_CATEGORY_ID;
+
+    const { data: addResp } = await axios.post(`${BITRIX_URL}/crm.deal.add`, { fields });
+    if (addResp.error) throw new Error(addResp.error_description || addResp.error);
+
+    logger.info(`Сделка ${deal_id} скопирована как новая ${addResp.result}`);
+    res.json({ status: 'ok', newDealId: addResp.result });
   } catch (err) {
-    logger.error(err.stack || err.message);
+    logger.error(err.message);
     res.status(500).json({ error: err.message });
   }
 });
