@@ -22,9 +22,17 @@ async function btrx(method, params = {}, asQuery = true) {
   const url = `${BITRIX_URL}/${method}`;
   const cfg = asQuery ? { params } : {};
   const body = asQuery ? null : params;
-  const { data } = await axios.post(url, body, cfg);
-  if (data.error) throw new Error(`${method}: ${data.error_description || data.error}`);
-  return data.result;
+  try {
+    const { data } = await axios.post(url, body, cfg);
+    if (data.error) throw new Error(`${method}: ${data.error_description || data.error}`);
+    return data.result;
+  } catch (e) {
+    // Добавляем вывод тела ответа
+    if (e.response && e.response.data) {
+      logger.error(`Bitrix24 response: ${JSON.stringify(e.response.data)}`);
+    }
+    throw e;
+  }
 }
 
 // Пагинация
