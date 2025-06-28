@@ -1,10 +1,10 @@
 require('dotenv').config();
-const express = require('express');
-const bodyParser = require('body-parser');
+const axios = require('axios');
 const winston = require('winston');
-const { copyDeal, copyTasks, copyActivities } = require('./bitrix_deal_task_transfer');
 
-const PORT = process.env.PORT || 10000;
+const BITRIX_URL          = process.env.BITRIX_URL;
+const DEFAULT_CATEGORY_ID = Number(process.env.TARGET_CATEGORY_ID || 14);
+const DEFAULT_RESPONSIBLE = Number(process.env.DEFAULT_RESPONSIBLE_ID || 1);
 
 const logger = winston.createLogger({
   level: 'info',
@@ -15,38 +15,105 @@ const logger = winston.createLogger({
   transports: [ new winston.transports.Console() ]
 });
 
-const app = express();
-app.use(bodyParser.json());
+// Универсальный вызов Bitrix REST API
+async function btrx(method, params = {}, asQuery = true) {
+  const url = `${BITRIX_URL}/${method}`;
+  const cfg = asQuery ? { params } : {};
+  const body = asQuery ? null : params;
+  const { data } = await axios.post(url, body, cfg);
+  if (data.error) throw new Error(`${method}: ${data.error_description || data.error}`);
+  return data.result;
+}
 
-// healthcheck
-app.get('/', (req, res) => res.send('Bitrix transfer server OK'));
-
-// Основной вебхук
-app.post('/webhook', async (req, res) => {
-  logger.info('▶️  Пришёл запрос на копирование сделки');
-  logger.info(`Request body: ${JSON.stringify(req.body)}`);
-
-  // Пробуем разные варианты передачи id
-  let deal_id = req.body?.deal_id || req.body?.ID || req.body?.id || null;
-  if (!deal_id) {
-    logger.error('Нужно передать ID сделки!');
-    return res.status(400).json({ error: 'Нужно передать ID сделки!' });
+// Получение всех задач сделки
+async function getDealTasks(dealId) {
+  const tasks = [];
+  let start = 0;
+  while (true) {
+    const res = await btrx('tasks.task.list', {
+      filter: { 'UF_CRM_TASK': `D_${dealId}` },
+      select: [
+        'ID','TITLE','RESPONSIBLE_ID','DESCRIPTION',
+        'START_DATE_PLAN','END_DATE_PLAN','DEADLINE','PRIORITY','STATUS'
+      ],
+      start
+    });
+    tasks.push(...(res.tasks || []));
+    if (!res.next) break;
+    start = res.next;
   }
-  // Защита от строковых id, Bitrix может передать строку
-  deal_id = Number(deal_id);
+  return tasks;
+}
 
-  try {
-    logger.info(`🚀 Копируем сделку с id ${deal_id}`);
-    // Копируем сделку и всё, что надо:
-    const newDealId = await copyDeal(deal_id, Number(process.env.TARGET_CATEGORY_ID || 14));
-    logger.info(`✅ Новая сделка создана: ${newDealId}`);
-    await copyTasks(deal_id, newDealId);
-    await copyActivities(deal_id, newDealId);
-    res.json({ status: 'ok', newDealId });
-  } catch (err) {
-    logger.error(err.stack || err.message);
-    res.status(500).json({ error: err.message });
+// Получение всех активностей сделки
+async function getDealActivities(dealId) {
+  const acts = [];
+  let start = 0;
+  while (true) {
+    const res = await btrx('crm.activity.list', {
+      filter: { OWNER_TYPE_ID: 2, OWNER_ID: dealId },
+      start
+    });
+    acts.push(...(res.activities || []));
+    if (!res.next) break;
+    start = res.next;
   }
-});
+  return acts;
+}
 
-app.listen(PORT, () => logger.info(`🚀 Сервер запущен на порту ${PORT}`));
+// Копировать задачи (все открыть)
+async function copyTasksOpen(srcDealId, dstDealId) {
+  const tasks = await getDealTasks(srcDealId);
+  for (const t of tasks) {
+    const title = t.TITLE?.trim() || `Задача #${t.ID}`;
+    const responsible = t.RESPONSIBLE_ID > 0 ? t.RESPONSIBLE_ID : DEFAULT_RESPONSIBLE;
+
+    const fields = {
+      TITLE:           title,
+      RESPONSIBLE_ID:  responsible,
+      DESCRIPTION:     t.DESCRIPTION || '',
+      START_DATE_PLAN: t.START_DATE_PLAN || undefined,
+      END_DATE_PLAN:   t.END_DATE_PLAN || undefined,
+      DEADLINE:        t.DEADLINE || undefined,
+      PRIORITY:        t.PRIORITY || 1,
+      UF_CRM_TASK:     [`D_${dstDealId}`],
+      STATUS:          2 // всегда "В работе"
+    };
+    try {
+      logger.info(`Копируем задачу "${title}" → новой сделке ${dstDealId}`);
+      await btrx('tasks.task.add', { fields }, false);
+    } catch (e) {
+      logger.error(`Ошибка копирования задачи ${t.ID}: ${e.message}`);
+    }
+  }
+}
+
+// Копировать активности (все сделать незавершенными)
+async function copyActivitiesOpen(srcDealId, dstDealId) {
+  const acts = await getDealActivities(srcDealId);
+  for (const a of acts) {
+    const subject = a.SUBJECT?.trim() || `Дело #${a.ID}`;
+    const responsible = a.RESPONSIBLE_ID > 0 ? a.RESPONSIBLE_ID : DEFAULT_RESPONSIBLE;
+    const fields = {
+      SUBJECT:        subject,
+      TYPE_ID:        a.TYPE_ID,
+      DIRECTION:      a.DIRECTION,
+      START_TIME:     a.START_TIME,
+      END_TIME:       a.END_TIME,
+      RESPONSIBLE_ID: responsible,
+      DESCRIPTION:    a.DESCRIPTION || '',
+      COMMUNICATIONS: a.COMMUNICATIONS || [],
+      OWNER_ID:       dstDealId,
+      OWNER_TYPE_ID:  2,
+      COMPLETED:      'N'
+    };
+    try {
+      logger.info(`Копируем дело "${subject}" → новой сделке ${dstDealId}`);
+      await btrx('crm.activity.add', { fields }, false);
+    } catch (e) {
+      logger.error(`Ошибка копирования дела ${a.ID}: ${e.message}`);
+    }
+  }
+}
+
+module.exports = { copyTasksOpen, copyActivitiesOpen };
