@@ -1,70 +1,58 @@
-require('dotenv').config();
-const express = require('express');
-const bodyParser = require('body-parser');
-const axios = require('axios');
-const winston = require('winston');
+async function copyTasks(srcDealId, dstDealId) {
+  const tasks = await btrxPaged('tasks.task.list', {
+    filter: { 'UF_CRM_TASK': `D_${srcDealId}` },
+    select: [
+      'ID','TITLE','RESPONSIBLE_ID','DESCRIPTION',
+      'START_DATE_PLAN','END_DATE_PLAN','DEADLINE','PRIORITY','STATUS','CHANGED_DATE'
+    ]
+  }, 'tasks');
 
-const BITRIX_URL = process.env.BITRIX_URL;
-const TARGET_CATEGORY_ID = Number(process.env.TARGET_CATEGORY_ID || 14);
-const PORT = process.env.PORT || 10000;
-
-const logger = winston.createLogger({
-  level: 'info',
-  format: winston.format.combine(
-    winston.format.timestamp({ format: 'DD-MM-YYYY HH:mm:ss' }),
-    winston.format.printf(({ timestamp, level, message }) => `${timestamp} [${level.toUpperCase()}] ${message}`)
-  ),
-  transports: [ new winston.transports.Console() ]
-});
-
-const app = express();
-app.use(bodyParser.json());
-
-app.get('/', (req, res) => res.send('Bitrix copier server OK'));
-
-app.post('/webhook', async (req, res) => {
-  let deal_id = Number(req.body?.deal_id || req.body?.ID || req.body?.id || 0);
-  if (!deal_id) {
-    logger.error('Не указан deal_id!');
-    return res.status(400).json({ error: 'Не указан deal_id!' });
+  // Определим последнюю не завершённую задачу
+  let lastOpenTask = null;
+  for (const t of tasks) {
+    if (!t.ID) {
+      logger.warn(`⚠️ Пропускаем задачу без ID: ${JSON.stringify(t)}`);
+      continue;
+    }
+    if (t.STATUS != 5 && (!lastOpenTask || new Date(t.CHANGED_DATE) > new Date(lastOpenTask.CHANGED_DATE))) {
+      lastOpenTask = t;
+    }
   }
-  logger.info(`Поступил запрос на копирование сделки: ${deal_id}`);
 
-  try {
-    // Получаем исходную сделку
-    const { data: getResp } = await axios.post(`${BITRIX_URL}/crm.deal.get`, { id: deal_id });
-    if (getResp.error) throw new Error(getResp.error_description || getResp.error);
-
-    const deal = getResp.result;
-    const dealTitle = deal.TITLE;
-
-    // Проверяем — не скопирована ли уже такая сделка в нужную категорию
-    const { data: listResp } = await axios.post(`${BITRIX_URL}/crm.deal.list`, {
-      filter: { CATEGORY_ID: TARGET_CATEGORY_ID, TITLE: dealTitle },
-      select: ['ID', 'TITLE'],
-      order: { ID: 'DESC' },
-      limit: 1
-    });
-
-    const exists = listResp.result && listResp.result.length > 0;
-    if (exists) {
-      logger.warn(`Сделка уже скопирована (ID ${listResp.result[0].ID})`);
-      return res.status(200).json({ status: 'already_exists', newDealId: listResp.result[0].ID });
+  for (const t of tasks) {
+    if (!t.ID) {
+      logger.warn(`⚠️ Пропускаем задачу без ID: ${JSON.stringify(t)}`);
+      continue;
     }
 
-    // Копируем
-    const { ID, CATEGORY_ID, STAGE_ID, ...fields } = deal;
-    fields.CATEGORY_ID = TARGET_CATEGORY_ID;
+    const title = t.TITLE && t.TITLE.trim() ? t.TITLE : `Задача #${t.ID}`;
+    const responsible = t.RESPONSIBLE_ID > 0 ? t.RESPONSIBLE_ID : DEFAULT_RESPONSIBLE;
 
-    const { data: addResp } = await axios.post(`${BITRIX_URL}/crm.deal.add`, { fields });
-    if (addResp.error) throw new Error(addResp.error_description || addResp.error);
+    // По умолчанию копируем с тем же статусом, но для последней незавершённой — открываем!
+    let status = t.STATUS;
+    if (lastOpenTask && t.ID === lastOpenTask.ID) status = 2;
 
-    logger.info(`Сделка ${deal_id} скопирована как новая ${addResp.result}`);
-    res.json({ status: 'ok', newDealId: addResp.result });
-  } catch (err) {
-    logger.error(err.message);
-    res.status(500).json({ error: err.message });
+    const fields = {
+      TITLE:           title,
+      RESPONSIBLE_ID:  responsible,
+      DESCRIPTION:     t.DESCRIPTION || '',
+      START_DATE_PLAN: t.START_DATE_PLAN || undefined,
+      END_DATE_PLAN:   t.END_DATE_PLAN || undefined,
+      DEADLINE:        t.DEADLINE || undefined,
+      PRIORITY:        t.PRIORITY || 1,
+      UF_CRM_TASK:     [`D_${dstDealId}`],
+      STATUS:          status
+    };
+    try {
+      logger.info('➡️ Создаём задачу:', fields);
+      const added = await btrx('tasks.task.add', { fields }, false);
+      const newId = added.task?.id || added.id || added;
+      logger.info(`📌 Задача ${t.ID} → ${newId} (${title})`);
+      await copyChecklist(t.ID, newId);
+      await copyComments(t.ID, newId);
+    } catch (e) {
+      logger.error(`Ошибка добавления задачи ${t.ID}: ${e.message}`);
+      logger.error(JSON.stringify(fields));
+    }
   }
-});
-
-app.listen(PORT, () => logger.info(`🚀 Сервер запущен на порту ${PORT}`));
+}
