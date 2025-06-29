@@ -3,7 +3,7 @@ const axios = require('axios');
 const app = express();
 app.use(express.json());
 
-const BITRIX_WEBHOOK = 'https://arles.bitrix24.ru/rest/10730/fhj1sly6jmutcuum';
+const BITRIX_URL = 'https://arles.bitrix24.ru/rest/10730/fhj1sly6jmutcuum';
 
 async function getTasksByDeal(dealId) {
   const response = await axios.post(`${BITRIX_WEBHOOK}/crm.activity.list`, {
@@ -17,7 +17,7 @@ async function getTasksByDeal(dealId) {
 }
 
 async function createTaskFrom(oldTask) {
-  await axios.post(`${BITRIX_WEBHOOK}/crm.activity.add`, {
+  await axios.post(`${BITRIX_URL}/crm.activity.add`, {
     fields: {
       "OWNER_ID": oldTask.OWNER_ID,
       "OWNER_TYPE_ID": 2,
