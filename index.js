@@ -6,7 +6,7 @@ app.use(express.json());
 const BITRIX_URL = 'https://arles.bitrix24.ru/rest/10730/fhj1sly6jmutcuum';
 
 async function getTasksByDeal(dealId) {
-  const response = await axios.post(`${BITRIX_WEBHOOK}/crm.activity.list`, {
+  const response = await axios.post(`${BITRIX_URL}/crm.activity.list`, {
     filter: {
       "OWNER_ID": dealId,
       "OWNER_TYPE_ID": 2, // 2 = сделка
