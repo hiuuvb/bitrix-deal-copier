@@ -1,1 +1,1 @@
-# bitrix-deal-copier
+# bitrix-task-resurrector
